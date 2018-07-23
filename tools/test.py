@@ -24,7 +24,8 @@ def main(argv):
     check_exists(test_cc)
     run([test_cc])
 
-    handlers_test = os.path.join(build_dir, "handlers_test" + executable_suffix)
+    handlers_test = os.path.join(build_dir,
+                                 "handlers_test" + executable_suffix)
     check_exists(handlers_test)
     run([handlers_test])
 
