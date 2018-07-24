@@ -5,10 +5,11 @@ use std::path::Path;
 
 #[allow(dead_code)]
 pub fn read_file_sync(path: &Path) -> std::io::Result<String> {
-  let mut f = File::open(path)?;
-  let mut contents = String::new();
-  f.read_to_string(&mut contents)?;
-  Ok(contents)
+  File::open(path).and_then(|mut f| {
+    let mut contents = String::new();
+    f.read_to_string(&mut contents)?;
+    Ok(contents)
+  })
 }
 
 pub fn mkdir(path: &Path) -> std::io::Result<()> {

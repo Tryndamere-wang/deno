@@ -110,3 +110,12 @@ pub fn reset() -> std::io::Result<()> {
   }
   setup()
 }
+
+pub fn load_cache(
+  filename: &str,
+  source_code: &str,
+) -> std::io::Result<String> {
+  let path = cache_path(filename, source_code);
+  debug!("load_cache {}", path.display());
+  fs::read_file_sync(&path)
+}

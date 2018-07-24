@@ -6,13 +6,12 @@ use deno_dir;
 use flatbuffers;
 use fs;
 use libc::c_char;
-use libc::uint32_t;
 use msg_generated::deno as msg;
 use std;
 use std::ffi::CStr;
 use std::fs::File;
-use std::io::Read;
 use std::path::Path;
+use std::result::Result;
 use url;
 use url::Url;
 
@@ -22,11 +21,6 @@ const ASSET_PREFIX: &str = "/$asset$/";
 fn test_url() {
   let issue_list_url = Url::parse("https://github.com/rust-lang").unwrap();
   assert!(issue_list_url.scheme() == "https");
-}
-
-fn string_from_ptr(ptr: *const c_char) -> String {
-  let cstr = unsafe { CStr::from_ptr(ptr as *const i8) };
-  String::from(cstr.to_str().unwrap())
 }
 
 // Help. Is there a way to do this without macros?
@@ -77,8 +71,8 @@ fn test_src_file_to_url() {
 // Prototype: https://github.com/ry/deno/blob/golang/os.go#L70-L98
 // Returns (module name, local filename)
 fn resolve_module(
-  module_specifier: &String,
-  containing_file: &String,
+  module_specifier: &str,
+  containing_file: &str,
 ) -> Result<(String, String), url::ParseError> {
   info!(
     "resolve_module before module_specifier {} containing_file {}",
@@ -92,7 +86,7 @@ fn resolve_module(
   let j: Url =
     if containing_file == "." || Path::new(module_specifier).is_absolute() {
       Url::from_file_path(module_specifier).unwrap()
-    } else if containing_file.as_str().ends_with("/") {
+    } else if containing_file.ends_with("/") {
       let base = Url::from_directory_path(&containing_file).unwrap();
       base.join(module_specifier)?
     } else {
@@ -197,33 +191,6 @@ fn test_resolve_module() {
   }
 }
 
-pub fn reply_code_fetch(
-  d: *const DenoC,
-  cmd_id: uint32_t,
-  module_name: &String,
-  filename: &String,
-  source_code: &String,
-  output_code: &String,
-) {
-  let mut builder = flatbuffers::FlatBufferBuilder::new();
-  let msg_args = msg::CodeFetchResArgs {
-    module_name: builder.create_string(module_name),
-    filename: builder.create_string(filename),
-    source_code: builder.create_string(source_code),
-    output_code: builder.create_string(output_code),
-    ..Default::default()
-  };
-  let msg = msg::CreateCodeFetchRes(&mut builder, &msg_args);
-  builder.finish(msg);
-  let args = msg::BaseArgs {
-    cmdId: cmd_id,
-    msg: Some(msg.union()),
-    msg_type: msg::Any::CodeFetchRes,
-    ..Default::default()
-  };
-  set_response_base(d, &mut builder, &args)
-}
-
 fn reply_error(d: *const DenoC, cmd_id: u32, msg: &String) {
   let mut builder = flatbuffers::FlatBufferBuilder::new();
   // println!("reply_error{}", msg);
@@ -259,6 +226,75 @@ fn set_response_base(
   unsafe { deno_set_response(d, buf) }
 }
 
+fn get_source_code(
+  module_name: &str,
+  filename: &str,
+) -> std::io::Result<String> {
+  if is_remote(module_name) {
+    unimplemented!();
+  } else if module_name.starts_with(ASSET_PREFIX) {
+    assert!(false, "Asset resolution should be done in JS, not Rust.");
+    unimplemented!();
+  } else {
+    assert!(
+      module_name == filename,
+      "if a module isn't remote, it should have the same filename"
+    );
+    fs::read_file_sync(Path::new(filename))
+  }
+}
+
+struct CodeFetchOutput {
+  module_name: String,
+  filename: String,
+  source_code: String,
+  maybe_output_code: Option<String>,
+}
+
+use std::error::Error;
+
+fn code_fetch(
+  module_specifier: &str,
+  containing_file: &str,
+) -> Result<CodeFetchOutput, Box<Error>> {
+  let (module_name, filename) =
+    resolve_module(module_specifier, containing_file)?;
+
+  debug!(
+        "code_fetch. module_name = {} module_specifier = {} containing_file = {} filename = {}",
+        module_name, module_specifier, containing_file, filename
+    );
+
+  let out = get_source_code(module_name.as_str(), filename.as_str()).and_then(
+    |source_code| {
+      Ok(CodeFetchOutput {
+        module_name,
+        filename,
+        source_code,
+        maybe_output_code: None,
+      })
+    },
+  )?;
+
+  let result =
+    deno_dir::load_cache(out.filename.as_str(), out.source_code.as_str());
+  match result {
+    Err(err) => {
+      if err.kind() == std::io::ErrorKind::NotFound {
+        Ok(out)
+      } else {
+        Err(err.into())
+      }
+    }
+    Ok(output_code) => Ok(CodeFetchOutput {
+      module_name: out.module_name,
+      filename: out.filename,
+      source_code: out.source_code,
+      maybe_output_code: Some(output_code),
+    }),
+  }
+}
+
 // https://github.com/ry/deno/blob/golang/os.go#L100-L154
 #[no_mangle]
 pub extern "C" fn handle_code_fetch(
@@ -267,64 +303,43 @@ pub extern "C" fn handle_code_fetch(
   module_specifier_: *const c_char,
   containing_file_: *const c_char,
 ) {
-  let module_specifier = string_from_ptr(module_specifier_);
-  let containing_file = string_from_ptr(containing_file_);
+  let module_specifier = str_from_ptr!(module_specifier_);
+  let containing_file = str_from_ptr!(containing_file_);
 
-  let result = resolve_module(&module_specifier, &containing_file);
-  if result.is_err() {
-    let err = result.unwrap_err();
-    let errmsg = format!("{} {} {}", err, module_specifier, containing_file);
+  let result = code_fetch(module_specifier, containing_file).map_err(|err| {
+    let errmsg = format!("{}", err);
     reply_error(d, cmd_id, &errmsg);
+  });
+  if result.is_err() {
     return;
   }
-  let (module_name, filename) = result.unwrap();
-
-  let mut source_code = String::new();
-
-  debug!(
-        "code_fetch. module_name = {} module_specifier = {} containing_file = {} filename = {}",
-        module_name, module_specifier, containing_file, filename
-    );
-
-  if is_remote(&module_name) {
-    unimplemented!();
-  } else if module_name.starts_with(ASSET_PREFIX) {
-    assert!(false, "Asset resolution should be done in JS, not Rust.");
-  } else {
-    assert!(
-      module_name == filename,
-      "if a module isn't remote, it should have the same filename"
-    );
-    let result = File::open(&filename);
-    if result.is_err() {
-      let err = result.unwrap_err();
-      let errmsg = format!("{} {}", err, filename);
-      reply_error(d, cmd_id, &errmsg);
-      return;
+  let out = result.unwrap();
+  // reply_code_fetch
+  let mut builder = flatbuffers::FlatBufferBuilder::new();
+  let mut msg_args = msg::CodeFetchResArgs {
+    module_name: builder.create_string(&out.module_name),
+    filename: builder.create_string(&out.filename),
+    source_code: builder.create_string(&out.source_code),
+    ..Default::default()
+  };
+  match out.maybe_output_code {
+    Some(ref output_code) => {
+      msg_args.output_code = builder.create_string(output_code);
     }
-    let mut f = result.unwrap();
-    let result = f.read_to_string(&mut source_code);
-    if result.is_err() {
-      let err = result.unwrap_err();
-      let errmsg = format!("{} {}", err, filename);
-      reply_error(d, cmd_id, &errmsg);
-      return;
-    }
-  }
-
-  let output_code = String::new(); //load_output_code_cache(filename, source_code);
-
-  reply_code_fetch(
-    d,
-    cmd_id,
-    &module_name,
-    &filename,
-    &source_code,
-    &output_code,
-  )
+    _ => (),
+  };
+  let msg = msg::CreateCodeFetchRes(&mut builder, &msg_args);
+  builder.finish(msg);
+  let args = msg::BaseArgs {
+    cmdId: cmd_id,
+    msg: Some(msg.union()),
+    msg_type: msg::Any::CodeFetchRes,
+    ..Default::default()
+  };
+  set_response_base(d, &mut builder, &args)
 }
 
-fn is_remote(_module_name: &String) -> bool {
+fn is_remote(_module_name: &str) -> bool {
   false
 }
 
