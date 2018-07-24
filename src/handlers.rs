@@ -4,6 +4,7 @@
 use binding::{deno_buf, deno_set_response, DenoC};
 use deno_dir;
 use flatbuffers;
+use fs;
 use libc::c_char;
 use libc::uint32_t;
 use msg_generated::deno as msg;
@@ -355,11 +356,11 @@ fn code_cache(
   output_code: &str,
 ) -> std::io::Result<()> {
   deno_dir::setup()?;
-  let gen_path_buf = deno_dir::gen_path_buf(filename, source_code);
-  if gen_path_buf.exists() {
+  let cache_path = deno_dir::cache_path(filename, source_code);
+  if cache_path.exists() {
     return Ok(());
   }
-  let mut file = File::create(gen_path_buf)?;
+  let mut file = File::create(cache_path)?;
   file.write_all(output_code.as_bytes())?;
   Ok(())
 }
@@ -371,21 +372,13 @@ fn test_code_cache() {
   let filename = "hello.js";
   let source_code = "1+2";
   let output_code = "1+2 // output code";
-  let gen_path_buf = deno_dir::gen_path_buf(filename, source_code);
+  let cache_path = deno_dir::cache_path(filename, source_code);
   assert!(
-    gen_path_buf.ends_with("gen/e8e3ee6bee4aef2ec63f6ec3db7fc5fdfae910ae.js")
+    cache_path.ends_with("gen/e8e3ee6bee4aef2ec63f6ec3db7fc5fdfae910ae.js")
   );
 
   let r = code_cache(filename, source_code, output_code);
   r.expect("code_cache error");
-  assert!(gen_path_buf.exists());
-  assert_eq!(output_code, read_file_sync(&gen_path_buf).unwrap());
-}
-
-#[allow(dead_code)]
-fn read_file_sync(path: &Path) -> std::io::Result<String> {
-  let mut f = File::open(path)?;
-  let mut contents = String::new();
-  f.read_to_string(&mut contents)?;
-  Ok(contents)
+  assert!(cache_path.exists());
+  assert_eq!(output_code, fs::read_file_sync(&cache_path).unwrap());
 }

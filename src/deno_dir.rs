@@ -1,4 +1,5 @@
-extern crate sha1;
+use fs;
+use sha1;
 use std;
 use std::path::Path;
 use std::path::PathBuf;
@@ -33,12 +34,6 @@ pub fn path(dirname: Dirname) -> &'static Path {
   }
 }
 
-fn mkdir(path: &Path) -> std::io::Result<()> {
-  info!("mkdir -p {}", path.display());
-  assert!(path.has_root(), "non-has_root not yet implemented");
-  std::fs::create_dir_all(path)
-}
-
 // https://github.com/ry/deno/blob/golang/deno_dir.go#L99-L111
 pub fn setup() -> std::io::Result<()> {
   // Only setup once.
@@ -54,8 +49,8 @@ pub fn setup() -> std::io::Result<()> {
     DEPS = Some(path(Root).join("deps"));
     GEN = Some(path(Root).join("gen"));
   }
-  mkdir(path(Gen))?;
-  mkdir(path(Deps))?;
+  fs::mkdir(path(Gen))?;
+  fs::mkdir(path(Deps))?;
 
   debug!("root {}", path(Root).display());
   debug!("gen {}", path(Gen).display());
@@ -65,17 +60,17 @@ pub fn setup() -> std::io::Result<()> {
 }
 
 // https://github.com/ry/deno/blob/golang/deno_dir.go#L32-L35
-pub fn gen_path_buf(filename: &str, source_code: &str) -> PathBuf {
+pub fn cache_path(filename: &str, source_code: &str) -> PathBuf {
   let cache_key = source_code_hash(filename, source_code);
   let r = &path(Gen);
   r.join(cache_key + ".js")
 }
 
 #[test]
-fn test_gen_path_buf() {
+fn test_cache_path() {
   assert_eq!(
     path(Gen).join("a3e29aece8d35a19bf9da2bb1c086af71fb36ed5.js"),
-    gen_path_buf("hello.ts", "1+2")
+    cache_path("hello.ts", "1+2")
   );
 }
 

@@ -13,6 +13,7 @@ use std::ptr;
 
 mod binding;
 mod deno_dir;
+mod fs;
 pub mod handlers;
 use binding::{
   deno_delete, deno_execute, deno_handle_msg_from_js, deno_init,
