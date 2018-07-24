@@ -1,21 +1,20 @@
 // Copyright 2018 Ryan Dahl <ry@tinyclouds.org>
 // All rights reserved. MIT License.
-extern crate flatbuffers;
-extern crate url;
 
+use binding::{deno_buf, deno_set_response, DenoC};
+use deno_dir;
+use flatbuffers;
 use libc::c_char;
 use libc::uint32_t;
 use msg_generated::deno as msg;
+use std;
 use std::ffi::CStr;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use url;
 use url::Url;
 
-use binding::{deno_buf, deno_set_response, DenoC};
-
-// TODO(ry) SRC_DIR is just a placeholder for future caching functionality.
-static SRC_DIR: &str = "/Users/rld/.deno/src/";
 const ASSET_PREFIX: &str = "/$asset$/";
 
 #[test]
@@ -27,6 +26,15 @@ fn test_url() {
 fn string_from_ptr(ptr: *const c_char) -> String {
   let cstr = unsafe { CStr::from_ptr(ptr as *const i8) };
   String::from(cstr.to_str().unwrap())
+}
+
+// Help. Is there a way to do this without macros?
+// Want: fn str_from_ptr(*const c_char) -> &str
+macro_rules! str_from_ptr {
+  ($ptr:expr) => {{
+    let cstr = unsafe { CStr::from_ptr($ptr as *const i8) };
+    cstr.to_str().unwrap()
+  }};
 }
 
 /*
@@ -41,10 +49,8 @@ pub fn deno_handle_msg_from_js(d: *const DenoC, buf: deno_buf) {
 // Prototype: https://github.com/ry/deno/blob/golang/os.go#L56-L68
 #[allow(dead_code)]
 fn src_file_to_url<P: AsRef<Path>>(filename: P) -> String {
-  assert!(SRC_DIR.len() > 0, "SRC_DIR shouldn't be empty");
-
   let filename = filename.as_ref().to_path_buf();
-  let src = (SRC_DIR.as_ref() as &Path).to_path_buf();
+  let src = deno_dir::path(deno_dir::Deps).to_path_buf();
 
   if filename.starts_with(&src) {
     let rest = filename.strip_prefix(&src).unwrap();
@@ -58,10 +64,13 @@ fn src_file_to_url<P: AsRef<Path>>(filename: P) -> String {
 fn test_src_file_to_url() {
   assert_eq!("hello", src_file_to_url("hello"));
   assert_eq!("/hello", src_file_to_url("/hello"));
-  let x = SRC_DIR.to_string() + "hello";
-  assert_eq!("http://hello", src_file_to_url(&x));
-  let x = SRC_DIR.to_string() + "/hello";
-  assert_eq!("http://hello", src_file_to_url(&x));
+  let x = String::from(
+    deno_dir::path(deno_dir::Deps)
+      .join("hello/world.txt")
+      .to_str()
+      .unwrap(),
+  );
+  assert_eq!("http://hello/world.txt", src_file_to_url(x));
 }
 
 // Prototype: https://github.com/ry/deno/blob/golang/os.go#L70-L98
@@ -316,4 +325,67 @@ pub extern "C" fn handle_code_fetch(
 
 fn is_remote(_module_name: &String) -> bool {
   false
+}
+
+// https://github.com/ry/deno/blob/golang/os.go#L156-L169
+#[no_mangle]
+pub extern "C" fn handle_code_cache(
+  d: *const DenoC,
+  cmd_id: u32,
+  filename_: *const c_char,
+  source_code_: *const c_char,
+  output_code_: *const c_char,
+) {
+  let filename = str_from_ptr!(filename_);
+  let source_code = str_from_ptr!(source_code_);
+  let output_code = str_from_ptr!(output_code_);
+  let result = code_cache(filename, source_code, output_code);
+  if result.is_err() {
+    let err = result.unwrap_err();
+    let errmsg = format!("{}", err);
+    reply_error(d, cmd_id, &errmsg);
+  }
+  // null response indicates success.
+}
+
+use std::io::Write;
+fn code_cache(
+  filename: &str,
+  source_code: &str,
+  output_code: &str,
+) -> std::io::Result<()> {
+  deno_dir::setup()?;
+  let gen_path_buf = deno_dir::gen_path_buf(filename, source_code);
+  if gen_path_buf.exists() {
+    return Ok(());
+  }
+  let mut file = File::create(gen_path_buf)?;
+  file.write_all(output_code.as_bytes())?;
+  Ok(())
+}
+
+#[test]
+fn test_code_cache() {
+  deno_dir::reset().expect("deno_dir::reset error");
+
+  let filename = "hello.js";
+  let source_code = "1+2";
+  let output_code = "1+2 // output code";
+  let gen_path_buf = deno_dir::gen_path_buf(filename, source_code);
+  assert!(
+    gen_path_buf.ends_with("gen/e8e3ee6bee4aef2ec63f6ec3db7fc5fdfae910ae.js")
+  );
+
+  let r = code_cache(filename, source_code, output_code);
+  r.expect("code_cache error");
+  assert!(gen_path_buf.exists());
+  assert_eq!(output_code, read_file_sync(&gen_path_buf).unwrap());
+}
+
+#[allow(dead_code)]
+fn read_file_sync(path: &Path) -> std::io::Result<String> {
+  let mut f = File::open(path)?;
+  let mut contents = String::new();
+  f.read_to_string(&mut contents)?;
+  Ok(contents)
 }
